@@ -405,15 +405,19 @@ export interface SidebarConversation {
   }
 }
 
-/**
- * The client workspaces service face (mirror of the runtime IWorkspaces). Only
- * the chat's file-open funnel is touched: `openPath` hands an absolute path
- * to the Host OS's default application, and every chat-side file open
- * (tool rows, produced-files, prose mentions) funnels through it.
- */
-export interface SidebarWorkspacesService {
-  /** Open a filesystem path with the Host operating system's default application. */
-  openPath(path: string): Promise<void>
+/** Generated Remote result envelope used by the client gateway. */
+export type SidebarRemoteResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: unknown }
+
+/** The Session Remote slice used for chat-side native path opens. */
+export interface SidebarRemoteSessionService {
+  openWorkspacePath(request: { readonly path: string }): Promise<SidebarRemoteResult<{ readonly opened: true }>>
+}
+
+/** The generated client Remote namespace face used by this plugin. */
+export interface SidebarRemoteService {
+  readonly session: SidebarRemoteSessionService
 }
 
 /**
@@ -498,8 +502,8 @@ export interface SidebarContextShape {
   webRuntime: SidebarWebRuntime
   /** The client slot registry (register/inject). */
   slots: SidebarSlotsService
-  /** The client workspaces service face (file-open funnel). */
-  workspaces: SidebarWorkspacesService
+  /** Generated Remote namespaces (chat file-open funnel). */
+  remote: SidebarRemoteService
   /** The settings service face (prefs persistence + namespace reads). */
   settings: SidebarSettingsService
   /** The invariant registry face. */

@@ -1,21 +1,34 @@
 /**
- * Interception of the chat's file-open funnel. The client runtime's
- * `ctx.workspaces.openPath` is the SINGLE door every chat-side file open goes
- * through — ui-conversation's apply.ts resolves the path against the session
- * cwd and calls it for tool-row path links, the produced-files row, and
- * prose file mentions alike (verified against the DSH source:
- * `packages/client/ui-conversation/src/client/apply.ts` is the only
- * production caller). Wrapping that one method reroutes those opens into the
- * sidebar editor instead of the Host OS — no DSH modification needed.
+ * Interception of the chat's file-open funnel. DSH 0.1.2-alpha.3 resolves
+ * chat-side paths against the current session cwd, then calls
+ * `ctx.remote.session.openWorkspacePath({ path })` for tool-row path links,
+ * the produced-files row, and prose file mentions alike. Wrapping that one
+ * Remote method reroutes those opens into the sidebar editor instead of the
+ * Host OS — no DSH modification needed.
  *
  * The wrapper is dependency-free by design (no React / ui-primitives), so
  * the takeover logic is unit-testable and the file stays importable from the
  * test runtime.
  */
 
-/** The one service method the wrapper replaces (mirror of the runtime IWorkspaces). */
-export interface OpenPathService {
-  openPath(path: string): Promise<void>
+/** The request accepted by DSH's `session.openWorkspacePath` Remote method. */
+export interface OpenWorkspacePathRequest {
+  readonly path: string
+}
+
+/** The successful business value returned by the Host native opener. */
+export interface OpenWorkspacePathValue {
+  readonly opened: true
+}
+
+/** The generated Remote client envelope (carrier failures use the error arm). */
+export type OpenWorkspacePathResult =
+  | { readonly ok: true; readonly value: OpenWorkspacePathValue }
+  | { readonly ok: false; readonly error: unknown }
+
+/** The one Remote method the wrapper replaces. */
+export interface OpenWorkspacePathService {
+  openWorkspacePath(request: OpenWorkspacePathRequest): Promise<OpenWorkspacePathResult>
 }
 
 /** Per-call decisions the wrapper needs (wired to the store + ctx in the client half). */
@@ -48,32 +61,38 @@ export function isFolderRevealPath(path: string): boolean {
 }
 
 /**
- * Wrap `workspaces.openPath`: intercepted calls open the file in the sidebar
- * editor instead of the Host OS and resolve as success (the original's
- * callers ignore the result); anything that declines falls through to the
- * original method untouched. The one exception is the folder-reveal gesture,
- * which is routed to {@link OpenPathInterceptDeps.revealInExplorer} instead.
- * @param workspaces - the client workspaces service to wrap.
+ * Wrap `remote.session.openWorkspacePath`: intercepted calls open the file in
+ * the sidebar editor instead of the Host OS and resolve with the same success
+ * envelope the generated Remote client returns. Anything that declines falls
+ * through to the original method untouched. The one exception is the
+ * folder-reveal gesture, which is routed to
+ * {@link OpenPathInterceptDeps.revealInExplorer} instead.
+ * @param sessionRemote - the generated `remote.session` namespace to wrap.
  * @param deps - per-call takeover decisions.
  * @returns the disposer restoring the original method (HMR-safe).
  */
-export function wrapOpenPath(workspaces: OpenPathService, deps: OpenPathInterceptDeps): () => void {
-  // The RAW method reference (never a bound copy): restore must put back the
-  // exact original so a chain of wrappers (other plugins wrapping the same
-  // method) keeps working across disposals in any order.
-  const original = workspaces.openPath
-  workspaces.openPath = (path: string): Promise<void> => {
+export function wrapOpenWorkspacePath(
+  sessionRemote: OpenWorkspacePathService,
+  deps: OpenPathInterceptDeps,
+): () => void {
+  // Keep the raw method reference (rather than a bound copy), so disposal can
+  // restore the exact function that was present when this wrapper registered.
+  const original = sessionRemote.openWorkspacePath
+  sessionRemote.openWorkspacePath = (request): Promise<OpenWorkspacePathResult> => {
+    const { path } = request
     if (deps.takeoverEnabled()) {
       const sessionId = deps.currentSessionId()
       if (sessionId !== undefined) {
         if (isFolderRevealPath(path)) deps.revealInExplorer(path, sessionId)
         else deps.openInSidebar(path, sessionId)
-        return Promise.resolve()
+        // ui-chat reads `result.ok` before it considers the open complete. A
+        // void result would open the sidebar and then crash the caller.
+        return Promise.resolve({ ok: true, value: { opened: true } })
       }
     }
-    return original.call(workspaces, path)
+    return original.call(sessionRemote, request)
   }
   return () => {
-    workspaces.openPath = original
+    sessionRemote.openWorkspacePath = original
   }
 }
